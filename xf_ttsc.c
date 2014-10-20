@@ -5,15 +5,15 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include "../../include/qtts.h"
-#include "../../include/msp_cmn.h"
-#include "../../include/msp_errors.h"
+#include "include/qtts.h"
+#include "include/msp_cmn.h"
+#include "include/msp_errors.h"
 
 
 #define DEBUG
 #ifdef DEBUG
 FILE *fp = NULL;
-#define debug(fmt, args...) fprintf(fp, fmt, ##args)
+#define debug(fmt, args...) fprintf(fp, "[%s:%d]" fmt "\n", __FILE__, __LINE__, ##args)
 #else
 #define debug(fmt, args...)
 #endif
@@ -62,6 +62,7 @@ enum {
     CMD_TTS = 0,
     CMD_SET_LOGIN_CONFIG = 1,
     CMD_SET_TTS_PARAMS = 2,
+    CMD_SET_GLOBAL_TTS_PARAMS = 3,
 };
 
 typedef unsigned char byte;
@@ -127,6 +128,17 @@ int set_login_config(byte *buf, int len)
     return 0;
 }
 
+char *global_tts_params = NULL;
+int set_global_tts_params(byte *buf, int len)
+{
+    debug("setting global tts params");
+    if (!global_tts_params) free(global_tts_params);
+    global_tts_params = malloc(sizeof(byte)*(len+1));
+    memcpy(global_tts_params, buf, len);
+    global_tts_params[len] = 0;
+    return 0;
+}
+
 char *tts_params = NULL;
 int set_tts_params(byte *buf, int len)
 {
@@ -152,15 +164,20 @@ int text_to_speech(byte *buf, int len)
 
     debug("Texting to speech %d bytes, %s\n", len, buf);
     ret = MSPLogin(NULL, NULL, login_configs);
-    if ( ret != MSP_SUCCESS )
+    if ( ret != MSP_SUCCESS ) {
+        debug("MSPLogin failed: %d", ret);
         return ret;
+    }
 
     sess_id = QTTSSessionBegin(tts_params, &ret);
-    if ( ret != MSP_SUCCESS )
+    if ( ret != MSP_SUCCESS ) {
+        debug("QTTSSessionBegin failed: %d", ret);
         return ret;
+    }
 
     ret = QTTSTextPut(sess_id, buf, len, NULL );
     if ( ret != MSP_SUCCESS ) {
+        debug("QTTSTextPut failed: %d", ret);
         QTTSSessionEnd(sess_id, "TextPutError");
         return ret;
     }
@@ -201,7 +218,7 @@ int main(int argc, char *argv[])
     byte ret = 0;
 
 #ifdef DEBUG
-    fp = fopen("/opt/kazoo/xf.log", "w+");
+    fp = fopen("/opt/kazoo/xf.log", "a+");
 #endif
 
     while ((len = read_cmd(&buf)) > 0){
@@ -218,6 +235,10 @@ int main(int argc, char *argv[])
         }
         else if (fn == CMD_SET_TTS_PARAMS) {
             ret = set_tts_params(buf+1, len-1);
+            write_cmd(&ret, sizeof(ret)); 
+        }
+        else if (fn == CMD_SET_GLOBAL_TTS_PARAMS) {
+            ret = set_global_tts_params(buf+1, len-1);
             write_cmd(&ret, sizeof(ret)); 
         }
         else {
