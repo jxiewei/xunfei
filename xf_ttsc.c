@@ -13,56 +13,19 @@
 #define DEBUG
 #ifdef DEBUG
 FILE *fp = NULL;
-#define debug(fmt, args...) fprintf(fp, "[%s:%d]" fmt "\n", __FILE__, __LINE__, ##args)
+#define debug(fmt, args...) \
+{ \
+    fprintf(fp, "[%s:%d]" fmt "\n", __FILE__, __LINE__, ##args); \
+    fflush(fp); \
+}
 #else
 #define debug(fmt, args...)
 #endif
-typedef int SR_DWORD;
-typedef short int SR_WORD ;
-
-
-struct wave_pcm_hdr
-{
-    char            riff[4];
-    SR_DWORD        size_8;
-    char            wave[4];
-    char            fmt[4];
-    SR_DWORD        dwFmtSize;
-
-    SR_WORD         format_tag;
-    SR_WORD         channels;
-    SR_DWORD        samples_per_sec;
-    SR_DWORD        avg_bytes_per_sec;
-    SR_WORD         block_align;
-    SR_WORD         bits_per_sample;
-
-    char            data[4];
-    SR_DWORD        data_size;
-} ;
-
-
-struct wave_pcm_hdr default_pcmwavhdr = 
-{
-    { 'R', 'I', 'F', 'F' },
-    0,
-    {'W', 'A', 'V', 'E'},
-    {'f', 'm', 't', ' '},
-    16,
-    1,
-    1,
-    16000,
-    32000,
-    2,
-    16,
-    {'d', 'a', 't', 'a'},
-    0  
-};
 
 enum {
     CMD_TTS = 0,
     CMD_SET_LOGIN_CONFIG = 1,
     CMD_SET_TTS_PARAMS = 2,
-    CMD_SET_GLOBAL_TTS_PARAMS = 3,
 };
 
 typedef unsigned char byte;
@@ -77,13 +40,14 @@ int read_cmd(byte **buf)
     }
 
     len = ntohl(*((unsigned int *)tmp));
-    debug("read_cmd got len %u\n", len);
+    debug("read_cmd got len %u", len);
     *buf = malloc(len*sizeof(byte));
     read_exact(*buf,len);
 }
 
 int write_head(unsigned int len) {
     unsigned int li = htonl(len);
+
     write_exact(&li,4);
 }
 
@@ -97,9 +61,7 @@ int read_exact(byte *buf,int len)
 {
     int i,got=0;
     do{
-        if((i=read(0,buf+got,len-got))<=0) {
-            if (i < 0)
-                debug("read failed: %s\n", strerror(errno));
+        if((i=read(3,buf+got,len-got))<=0) {
             return(i);
         }
         got+=i;
@@ -111,10 +73,11 @@ int write_exact(byte *buf,int len)
 {
     int i,wrote=0;
     do{
-        if((i=write(1,buf+wrote,len-wrote))<=0)
+        if((i=write(4, buf+wrote,len-wrote))<=0)
             return(i);
         wrote+=i;
     }while(wrote<len);
+    fflush(stdout);
     return(len);
 }
 
@@ -128,21 +91,11 @@ int set_login_config(byte *buf, int len)
     return 0;
 }
 
-char *global_tts_params = NULL;
-int set_global_tts_params(byte *buf, int len)
-{
-    debug("setting global tts params");
-    if (!global_tts_params) free(global_tts_params);
-    global_tts_params = malloc(sizeof(byte)*(len+1));
-    memcpy(global_tts_params, buf, len);
-    global_tts_params[len] = 0;
-    return 0;
-}
 
 char *tts_params = NULL;
 int set_tts_params(byte *buf, int len)
 {
-    debug("setting tts pararms\n");
+    debug("setting tts pararms");
     if (!tts_params) free(tts_params);
     tts_params = malloc(sizeof(byte)*(len+1));
     memcpy(tts_params, buf, len);
@@ -152,17 +105,15 @@ int set_tts_params(byte *buf, int len)
 
 int text_to_speech(byte *buf, int len)
 {
-    struct wave_pcm_hdr pcmwavhdr = default_pcmwavhdr;
     const char* sess_id = NULL;
-    unsigned int text_len = 0;
-    char* audio_data, *obuf = NULL;
+    char *obuf = NULL;
     unsigned int audio_len = 0;
     unsigned int olen = 0;
     int synth_status = 1;
     int ret = 0;
     byte erlret = 0;
 
-    debug("Texting to speech %d bytes, %s\n", len, buf);
+    debug("Texting to speech %d bytes, %s", len, buf);
     ret = MSPLogin(NULL, NULL, login_configs);
     if ( ret != MSP_SUCCESS ) {
         debug("MSPLogin failed: %d", ret);
@@ -187,23 +138,21 @@ int text_to_speech(byte *buf, int len)
         const void *data = QTTSAudioGet(sess_id, &audio_len, &synth_status, &ret);
         if (NULL != data)
         {
-            pcmwavhdr.data_size += audio_len;
-            obuf = realloc(obuf, pcmwavhdr.data_size);
+            obuf = realloc(obuf, olen+audio_len);
             memcpy(obuf+olen, data, audio_len);
             olen += audio_len;
         }
-        usleep(150000);
+        usleep(15000);
         if (synth_status == 2 || ret != 0) 
             break;
     }
 
-    debug("got %d bytes speech\n", olen);
+    debug("got %d bytes speech", olen);
 
-    pcmwavhdr.size_8 += pcmwavhdr.data_size + 36;
-    write_head(sizeof(erlret)+sizeof(pcmwavhdr)+olen);
+    write_head(sizeof(erlret)+olen);
     write_exact(&erlret, sizeof(erlret));
-    write_exact((byte*)&pcmwavhdr, sizeof(pcmwavhdr));
     write_exact(obuf, olen);
+    free(obuf);
 
     QTTSSessionEnd(sess_id, NULL);
     MSPLogout();
@@ -223,7 +172,7 @@ int main(int argc, char *argv[])
 
     while ((len = read_cmd(&buf)) > 0){
         fn = buf[0];
-        debug("cmd %d\n", fn);
+        debug("cmd %d", fn);
         if (fn == CMD_TTS) {
             if ((ret = text_to_speech(buf+1, len-1)) != 0) {
                write_cmd(&ret, sizeof(ret)); 
@@ -237,18 +186,14 @@ int main(int argc, char *argv[])
             ret = set_tts_params(buf+1, len-1);
             write_cmd(&ret, sizeof(ret)); 
         }
-        else if (fn == CMD_SET_GLOBAL_TTS_PARAMS) {
-            ret = set_global_tts_params(buf+1, len-1);
-            write_cmd(&ret, sizeof(ret)); 
-        }
         else {
-            debug("uninown cmd %d\n", fn);
+            debug("unknown cmd %d", fn);
             exit(EXIT_FAILURE);
         }
 
         free(buf);
     }
-    debug("exiting\n");
+    debug("exiting");
 #ifdef DEBUG
     fclose(fp);
 #endif
